@@ -448,7 +448,7 @@ public class DesktopInput extends InputHandler{
                 });
                 scene.add(table);
             }
-            if((input.keyDown(Binding.control) || input.shift()) && Core.input.keyTap(Binding.select)){
+            if(((input.keyDown(Binding.control) || input.shift()) && Core.input.keyTap(Binding.select)) && block == null){
                 Unit on = selectedUnit(true);
                 var build = selectedControlBuild();
                 if(on != null){
@@ -895,7 +895,7 @@ public class DesktopInput extends InputHandler{
 
             player.boosting = unit.type.canBoost && Core.settings.getBool("autoboost") ^ input.keyDown(Binding.boost); // If auto-boost, invert the behavior of the boost key
 
-            if (!Core.input.keyDown(Binding.select) && shouldShoot) Client.INSTANCE.autoShoot();
+            if ((!Core.input.keyDown(Binding.select) || block != null) && shouldShoot) Client.INSTANCE.autoShoot();
         } else if (Navigation.currentlyFollowing instanceof MinePath mp && mp.getNewGame() && !movement.isZero()) Navigation.stopFollowing(); // Stop automatic mining on player move
         unit.controlWeapons(true, player.shooting && !boosted);
 

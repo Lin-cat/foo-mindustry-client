@@ -11,13 +11,13 @@ import mindustry.*
 import mindustry.Vars.*
 import mindustry.Vars.state
 import mindustry.ai.*
+import mindustry.ai.types.*
 import mindustry.client.ClientVars.*
 import mindustry.client.Spectate.spectate
 import mindustry.client.antigrief.*
 import mindustry.client.communication.*
 import mindustry.client.communication.Packets
 import mindustry.client.crypto.*
-import mindustry.client.graphics.*
 import mindustry.client.navigation.*
 import mindustry.client.navigation.Navigation.*
 import mindustry.client.utils.*
@@ -93,6 +93,7 @@ object Client {
 
     fun draw() {
         Spectate.draw()
+        autoTransfer.draw()
 
         // Spawn path
         if (spawnTime < 0 && spawner.spawns.size < 50) { // FINISHME: Repetitive code, squash down
@@ -118,16 +119,17 @@ object Client {
         // Turret range
         val bounds = Core.camera.bounds(Tmp.r3).grow(tilesize.toFloat())
         if (showingTurrets) {
-            Draw.z(Layer.space)
             val units = Core.settings.getBool("unitranges")
-            circles.clear()
             synchronized(obstacles) {
                 for (t in obstacles) {
                     if (!t.canShoot || !(t.turret || units) || !bounds.overlaps(t.x - t.radius, t.y - t.radius, t.radius * 2, t.radius * 2)) continue
                     circles.add(t to if (t.canHitPlayer) t.team.color else Team.derelict.color)
+                    Drawf.dashCircle(
+                        t.x, t.y, t.radius - tilesize,
+                        if (t.canHitPlayer) t.team.color else Team.derelict.color
+                    )
                 }
             }
-            RangeDrawer.draw(circles)
         }
 
         // Player controlled turret range
@@ -316,37 +318,40 @@ object Client {
             var n = 0
             val newLinks = IntMap<IntSet>()
             val tmp = mutableListOf<ConfigRequest>()
-//            clientThread.post {
-                for ((grid, buildings) in grids) { // This is horrible but works somehow
-                    for (nodeBuild in buildings) {
-                        val nodeBlock = nodeBuild.block as? PowerNode ?: continue
-                        var links = nodeBuild.power.links.size
-                        nodeBlock.getPotentialLinks(nodeBuild.tile, player.team()) { link ->
-                            val min = min(grid, link.power.graph.id)
-                            val max = max(grid, link.power.graph.id)
-                            if (diodeLinks.any { it[0] == min && it[1] == max }) return@getPotentialLinks // Don't connect across diodes
-                            if (++links > nodeBlock.maxNodes) return@getPotentialLinks // Respect max links
-                            val t = newLinks.get(grid) { IntSet.with(grid) }
-                            val l = newLinks.get(link.power.graph.id, IntSet())
-                            if (l.add(grid) && t.add(link.power.graph.id)) {
-                                l.addAll(t)
-                                newLinks.put(link.power.graph.id, l)
-                                if (confirmed && !inProgress) tmp.add(ConfigRequest(nodeBuild.tileX(), nodeBuild.tileY(), link.pos()))
-                                n++
-                            }
+            for ((grid, buildings) in grids) { // This is horrible but works somehow
+                for (nodeBuild in buildings) {
+                    val nodeBlock = nodeBuild.block as? PowerNode ?: continue
+                    var links = nodeBuild.power.links.size
+                    nodeBlock.getPotentialLinks(nodeBuild.tile, player.team()) { link ->
+                        val min = min(grid, link.power.graph.id)
+                        val max = max(grid, link.power.graph.id)
+                        if (diodeLinks.any { it[0] == min && it[1] == max }) return@getPotentialLinks // Don't connect across diodes
+                        if (++links > nodeBlock.maxNodes) return@getPotentialLinks // Respect max links
+                        val t = newLinks.get(grid) { IntSet.with(grid) }
+                        val l = newLinks.get(link.power.graph.id, IntSet())
+                        if (l.add(grid) && t.add(link.power.graph.id)) {
+                            l.addAll(t)
+                            newLinks.put(link.power.graph.id, l)
+                            if (confirmed && !inProgress) tmp.add(ConfigRequest(nodeBuild.tileX(), nodeBuild.tileY(), link.pos()))
+                            n++
                         }
                     }
                 }
-//                Core.app.post {
-                    configs.addAll(tmp)
-                    if (confirmed) {
-                        if (inProgress) player.sendMessage("[scarlet]The config queue isn't empty, there are ${configs.size} configs queued, there are $n nodes to connect.") // FINISHME: Bundle
-                        else player.sendMessage(Core.bundle.format("client.command.fixpower.success", n, grids.size - n))
-                    } else {
-                        player.sendMessage(Core.bundle.format("client.command.fixpower.confirm", n, grids.size))
+            }
+            configs.addAll(tmp)
+            @Suppress("CAST_NEVER_SUCCEEDS") val msg = ui.chatfrag.addMessage("", null as? Color)
+            msg.message = when {
+                confirmed && inProgress -> Core.bundle.format("client.command.fixpower.inprogress", configs.size, n)
+                confirmed -> { // Actually fix the connections
+                    configs.add { // This runs after the connections are made
+                        msg.message = Core.bundle.format("client.command.fixpower.success", n, PowerGraph.activeGraphs.select { it.team == player.team() }.size)
+                        msg.format()
                     }
-//                }
-//            }
+                    Core.bundle.format("client.command.fixpower.confirmed", n)
+                }
+                else -> Core.bundle.format("client.command.fixpower.confirm", n, grids.size)
+            }
+            msg.format()
         }
 
         @Suppress("unchecked_cast")
@@ -361,6 +366,7 @@ object Client {
 
                 if (confirmed && !inProgress) {
                     Log.debug("Patching!")
+                    val start = Time.nanos()
                     (builds as Seq<LogicBlock.LogicBuild>).each { build ->
                         val patched = ProcessorPatcher.patch(build.code)
                         if (patched != build.code) {
@@ -369,6 +375,7 @@ object Client {
                             n++
                         }
                     }
+                    Log.debug("Patching took ${Time.timeSinceNanos(start)/Time.nanosPerMilli.toFloat()}ms")
                 }
                 Core.app.post {
                     if (confirmed) {
@@ -458,12 +465,6 @@ object Client {
             }
         }
 
-        register("togglesign", Core.bundle.get("client.command.togglesign.description")) { _, player ->
-            val previous = Core.settings.getBool("signmessages")
-            Core.settings.put("signmessages", !previous)
-            player.sendMessage(Core.bundle.format("client.command.togglesign.success", Core.bundle.get(if (previous) "off" else "on").lowercase()))
-        }
-
         register("stoppathing <name/id...>", "Stop someone from pathfinding.") { args, _ -> // FINISHME: Bundle
             val name = args.joinToString(" ")
             val player = Groups.player.find { it.id == Strings.parseInt(name) } ?: Groups.player.minByOrNull { Strings.levenshtein(Strings.stripColors(it.name), name) }!!
@@ -475,7 +476,7 @@ object Client {
             Main.send(ClientMessageTransmission(args[0]).apply { addToChatfrag() })
         }
 
-        register("mapinfo", "Lists various useful map info.") { _, player ->
+        register("mapinfo", "Lists various useful map info.") { _, player -> // FINISHME: Bundle
             player.sendMessage(with(state) {
                 """
                 [accent]Name: ${map.name()}[accent] (by: ${map.author()}[accent])
@@ -487,6 +488,17 @@ object Client {
                 Core Modifies Unit Cap: ${rules.unitCapVariable}
                 """.trimIndent()
             })
+        }
+
+        register("binds <type>", "") { args, player -> // FINISHME: Bundle
+            val type = content.units().min { b -> BiasedLevenshtein.biasedLevenshteinInsensitive(args[0], b.localizedName) }
+
+            player.team().data().unitCache(type)
+                ?.filter { it.controller() is LogicAI }
+                ?.groupBy { (it.controller() as LogicAI).controller }
+                ?.forEach { (build, units) ->
+                    player.sendMessage("x${units.size} [accent](${build.tileX()}, ${build.tileY()})")
+                }
         }
     }
 
