@@ -43,27 +43,23 @@ abstract class Navigator {
     fun navigate(start: Vec2, end: Vec2, obstacles: Iterable<TurretPathfindingEntity>): Array<PositionWaypoint> {
         start.clamp(0f, 0f, world.unitHeight().toFloat(), world.unitWidth().toFloat())
         end.clamp(0f, 0f, world.unitHeight().toFloat(), world.unitWidth().toFloat())
-        val additionalRadius =
-            if (player.unit().formation == null) player.unit().hitSize / 2
-            else player.unit().formation().pattern.radius() + player.unit().formation.pattern.spacing / 2
+        val additionalRadius = player.unit().hitSize / 2
 
-        if(state.map.name() != "The Maze") {
-            synchronized (obstacles) {
-                for (turret in obstacles) {
-                    if (turret.canHitPlayer && turret.canShoot) {
-                        realObstacles.add(
-                            Pools.obtain(Circle::class.java) { Circle() }.set(
-                                turret.x,
-                                turret.y,
-                                turret.radius + additionalRadius
-                            )
+        if (player.unit().type.hittable(player.unit())) {
+            for (turret in obstacles) {
+                if (turret.canHitPlayer() && turret.canShoot()) {
+                    realObstacles.add(
+                        Pools.obtain(Circle::class.java) { Circle() }.set(
+                            turret.x(),
+                            turret.y(),
+                            turret.range + additionalRadius
                         )
-                    }
+                    )
                 }
             }
         }
 
-        if (state.hasSpawns()) { // FINISHME: These should really be weighed less than turrets...
+        if (state.hasSpawns()) {
             for (spawn in spawner.spawns) {
                 realObstacles.add(
                     Pools.obtain(Circle::class.java) { Circle() }.set(
@@ -77,14 +73,14 @@ abstract class Navigator {
 
         if (Time.timeSinceMillis(lastWp) > 3000) {
             if (map.size > 0) { // CN auto core tp is different as a plugin allows for some magic...
-                val closestCore = map.minByOrNull { it.value.dst(end) }!!
-                if (player.dst(closestCore.value) > buildingRange &&  player.dst(end) > closestCore.value.dst(end)) {
+                val closestCore = map.minByOrNull { it.value.dst2(end) }!!
+                if (player.dst2(closestCore.value) > buildingRange * buildingRange && player.dst2(end) > closestCore.value.dst2(end)) {
                     lastWp = Time.millis() // Try again in 3s
                     Call.sendChatMessage("/wp ${closestCore.key}")
                 }
-            } else if (player.unit().spawnedByCore && !player.unit().isCommanding && player.unit().stack.amount == 0) { // Everything that isn't CN
-                val bestCore = player.team().cores().min(Structs.comps(Structs.comparingInt { -it.block.size }, Structs.comparingFloat { it.dst(end) }))
-                if (player.dst(bestCore) > buildingRange && player.dst(end) > bestCore.dst(end)) {
+            } else if (player.unit().spawnedByCore && player.unit().stack.amount == 0) { // Everything that isn't CN
+                val bestCore = player.team().cores().min(Structs.comps(Structs.comparingInt { -it.block.size }, Structs.comparingFloat { it.dst2(end) }))
+                if (player.dst2(bestCore) > buildingRange * buildingRange && player.dst2(end) > bestCore.dst2(end) && player.dst2(bestCore) > player.unit().speed() * player.unit().speed() * 24 * 24) { // don't try to move if we're already close to that core
                     lastWp = Time.millis() // Try again in 3s
                     Call.buildingControlSelect(player, bestCore)
                 }
